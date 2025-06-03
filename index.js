@@ -6,14 +6,6 @@ require('dotenv').config();
 const app = express();
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
-
 // Appwrite client setup
 const client = new Client()
   .setEndpoint(process.env.APPWRITE_ENDPOINT)
@@ -22,7 +14,15 @@ const client = new Client()
 
 const databases = new Databases(client);
 
-// Webhook endpoint
+// Needed to read raw body for Stripe signature verification
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
@@ -34,28 +34,30 @@ app.post('/webhook', async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.log('Webhook signature verification failed.', err.message);
+    console.error('❌ Stripe signature error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // ✅ Handle successful payment
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const amount = session.amount_total / 100; // convert cents to dollars
+    const amountPaid = session.amount_total / 100;
 
     try {
+      // Find unused gift card with matching amount
       const result = await databases.listDocuments(
         process.env.APPWRITE_DATABASE_ID,
-        'giftcards',
+        process.env.APPWRITE_COLLECTION_ID,
         [
-          Query.equal('amount', amount),
+          Query.equal('amount', amountPaid),
           Query.equal('used', false),
-          Query.limit(1),
+          Query.limit(1)
         ]
       );
 
       if (result.total === 0) {
-        console.log('No unused gift cards found.');
-        return res.status(404).send('No gift cards available.');
+        console.warn('⚠️ No available gift card for this amount');
+        return res.status(200).send('No available gift card');
       }
 
       const card = result.documents[0];
@@ -63,25 +65,26 @@ app.post('/webhook', async (req, res) => {
       // Mark it as used
       await databases.updateDocument(
         process.env.APPWRITE_DATABASE_ID,
-        'giftcards',
+        process.env.APPWRITE_COLLECTION_ID,
         card.$id,
         { used: true }
       );
 
-      console.log('Gift card assigned:', card.code);
+      console.log(`✅ Gift card assigned: ${card.code}`);
 
-      // TODO: trigger email or print option
+      // Optionally, you can email the user here (later step)
 
+      res.status(200).send('Gift card assigned');
     } catch (error) {
-      console.error('Error with Appwrite:', error);
-      return res.status(500).send('Database error.');
+      console.error('❌ Failed to process gift card:', error);
+      res.status(500).send('Server error');
     }
+  } else {
+    res.status(200).send('Event received');
   }
-
-  res.status(200).send('Received');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Webhook server running on port ${PORT}`);
 });
