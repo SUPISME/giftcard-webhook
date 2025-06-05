@@ -14,7 +14,7 @@ const client = new Client()
 
 const databases = new Databases(client);
 
-// Allow reading raw body for Stripe signature
+// Stripe requires raw body for signature verification
 app.use(
   express.json({
     verify: (req, res, buf) => {
@@ -38,11 +38,14 @@ app.post('/webhook', async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Handle successful checkout
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
 
+    const amountPaid = session.amount_total / 100; // Stripe uses cents
     const email = session.customer_details.email;
-    const amount = session.amount_total / 100; // convert from cents
+
+    // Generate a random 10-digit code
     const giftCardCode = Math.floor(1000000000 + Math.random() * 9000000000).toString();
 
     try {
@@ -52,23 +55,25 @@ app.post('/webhook', async (req, res) => {
         ID.unique(),
         {
           code: giftCardCode,
-          initial_value: amount,
-          remaining_value: amount,
-          is_active: true,
+          initial_value: amountPaid,
+          remaining_value: amountPaid,
           email: email,
-          created_at: new Date().toISOString()
+          is_active: true,
+          issued_at: new Date().toISOString(),
         }
       );
 
-      console.log(`✅ Created gift card: ${giftCardCode} for $${amount}`);
-    } catch (err) {
-      console.error('Failed to create gift card in Appwrite:', err.message);
-      return res.status(500).send('Failed to create gift card');
+      console.log(`✅ Gift card ${giftCardCode} for $${amountPaid} created for ${email}`);
+      res.status(200).send('Gift card created');
+    } catch (error) {
+      console.error('❌ Failed to create gift card in Appwrite:', error);
+      res.status(500).send('Internal Server Error');
     }
+  } else {
+    res.status(200).send('Event received');
   }
-
-  res.json({ received: true });
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Webhook listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Webhook server running on port ${PORT}`));
